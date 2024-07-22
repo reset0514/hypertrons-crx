@@ -7,64 +7,102 @@ import { orderBy, take } from 'lodash-es';
 const theme = getGithubTheme();
 const DARK_TEXT_COLOR = 'rgba(230, 237, 243, 0.9)';
 
-export interface RepoActivityDetails {
-  // e.g. 2020-05: [["frank-zsy", 4.69], ["heming6666", 3.46], ["menbotics[bot]", 2]]
-  [key: string]: [string, number][];
+interface Node {
+  id: string;
+  n: string;
+  c: string;
+  i: number;
+  r: number;
+  v: number;
 }
 
-/**
- * Filter and extract monthly data from the given data structure, which includes various date formats such as "yyyy", "yyyy-Qq", and "yyyy-mm".
- * This function extracts and returns only the monthly data in the "yyyy-mm" format.
- *
- * @param data: RepoActivityDetails
- * @returns RepoActivityDetails
- */
-export function getMonthlyData(data: RepoActivityDetails) {
-  const monthlyData: RepoActivityDetails = {};
+interface Link {
+  s: string;  // Source node id
+  t: string;  // Target node id
+  w: number;  // Weight of the link
+}
 
-  for (const key in data) {
-    // Check if the key matches the yyyy-mm format (e.g., "2020-05")
-    if (/^\d{4}-\d{2}$/.test(key)) {
-      monthlyData[key] = data[key];
+interface ApiResponse {
+  nodes: Node[];
+  links: Link[];
+}
+
+interface ExtractedNode {
+  n: string;
+  openrank: number;  // 仅包含 n 和 openrank
+  date: string;      // 添加时间字段
+}
+
+// 获取数据函数
+async function fetchData(year: string, month: string): Promise<{ nodes: ExtractedNode[] } | null> {
+  // 构建 URL，动态修改年份和月份
+  const URL = `https://oss.x-lab.info/open_digger/github/X-lab2017/open-digger/project_openrank_detail/${year}-${month}.json`;
+
+  try {
+    const response = await fetch(URL);
+    if (!response.ok) {
+      throw new Error(`Error fetching data: ${response.statusText}`);
+    }
+    const data: ApiResponse = await response.json();
+
+    // 提取 nodes 中的 n 和计算 openrank，并添加时间字段
+    const extractedNodes: ExtractedNode[] = data.nodes.map(node => ({
+      n: node.n,
+      openrank: node.r * node.v,  // 计算 openrank
+      date: `${year}-${month}`     // 添加时间字段
+    }));
+
+    return {
+      nodes: extractedNodes,
+    };
+  } catch (error) {
+    console.error('Failed to fetch data:', error);
+    return null;
+  }
+}
+
+// 获取数据并按月份分组
+async function fetchAndFormatData(years: string[], months: string[]): Promise<void> {
+  const allNodes: ExtractedNode[] = [];
+
+  for (const year of years) {
+    for (const month of months) {
+      const data = await fetchData(year, month);
+      if (data) {
+        allNodes.push(...data.nodes);
+      }
     }
   }
-  return monthlyData;
+
+  // 将数据按月份分组
+  const groupedNodes = allNodes.reduce((acc, node) => {
+    if (!acc[node.date]) {
+      acc[node.date] = [];
+    }
+    acc[node.date].push([node.n, node.openrank]);
+    return acc;
+  }, {} as Record<string, [string, number][]>);
+
+  // 输出按月份分组后的数据
+  console.log(JSON.stringify(groupedNodes, null, 2));
 }
 
-/**
- * Count the number of unique contributors in the data
- * @returns [number of long term contributors, contributors' names]
- */
-export const countLongTermContributors = (
-  data: RepoActivityDetails
-): [number, string[]] => {
-  const contributors = new Map<string, number>();
-  Object.keys(data).forEach((month) => {
-    data[month].forEach((item) => {
-      if (contributors.has(item[0])) {
-        contributors.set(item[0], contributors.get(item[0])! + 1);
-      } else {
-        contributors.set(item[0], 0);
-      }
-    });
-  });
-  let count = 0;
-  contributors.forEach((value) => {
-    // only count contributors who have contributed more than 3 months
-    if (value >= 3) {
-      count++;
-    }
-  });
-  return [count, [...contributors.keys()]];
-};
+// 示例调用
+fetchAndFormatData(['2023'], ['01']).then(() => {
+  console.log('Data fetching and formatting completed.');
+});
+import type { BarSeriesOption, EChartsOption } from 'echarts';
+import { orderBy, take } from 'lodash-es';
 
-export const DEFAULT_FREQUENCY = 2000;
+const theme = getGithubTheme();
+const DARK_TEXT_COLOR = 'rgba(230, 237, 243, 0.9)';
 
-/**
- * get the echarts option with the given data, month and speed.
- */
+// Define the type for grouped data
+export interface groupedNodes {
+  [key: string]: [string, number][];
+}
 export const getOption = async (
-  data: RepoActivityDetails,
+  groupedData: groupedNodes,
   month: string,
   speed: number,
   maxBars: number,
@@ -72,8 +110,12 @@ export const getOption = async (
 ): Promise<EChartsOption> => {
   const updateFrequency = DEFAULT_FREQUENCY / speed;
   const rich: any = {};
-  const sortedData = orderBy(data[month], (item) => item[1], 'desc');
+
+  // Extract data for the specific month
+  const data = groupedData[month] || [];
+  const sortedData = orderBy(data, (item) => item[1], 'desc');
   const topData = take(sortedData, maxBars);
+
   const barData: BarSeriesOption['data'] = await Promise.all(
     topData.map(async (item) => {
       // rich name cannot contain special characters such as '-'
